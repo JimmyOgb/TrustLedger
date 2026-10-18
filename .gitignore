@@ -1,0 +1,41 @@
+# Dependency directories
+node_modules/
+frontend/node_modules/
+
+# Next.js build output
+.next/
+frontend/.next/
+out/
+frontend/out/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+artifacts/
+
+# Environment files & Secrets
+.env
+.env*.local
+*.env
+*.env.local
+scripts/.test_accounts.json
+.test_accounts.json
+*.key
+*.pem
+*.secret
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
