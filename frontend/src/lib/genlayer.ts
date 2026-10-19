@@ -1,3 +1,6 @@
+import { createClient } from 'genlayer-js';
+import { studionet } from 'genlayer-js/chains';
+
 export const STUDIONET_CONFIG = {
   id: 61999,
   name: 'GenLayer StudioNet',
@@ -32,7 +35,7 @@ export function isValidContractAddress(address: string | null | undefined): bool
 // Note: V2 is not yet deployed to live testnet. Any deployment must be explicitly authorized.
 const envV2Address = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_V2_ESCROW_CONTRACT_ADDRESS
   ? process.env.NEXT_PUBLIC_V2_ESCROW_CONTRACT_ADDRESS.trim()
-  : null;
+  : '0x4Ec472F1fEc41cB89Fd11DfD788679786E874336';
 const envV2Deployed = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_V2_DEPLOYED === 'true';
 
 export const V2_DEPLOYMENT_CONFIG: DeploymentConfig = {
@@ -201,6 +204,44 @@ export interface EscrowSummary {
   project_count: number;
   milestone_count: number;
   claim_count?: number;
+}
+
+export const genlayerClient = createClient({ chain: studionet });
+
+export async function readContractState<T = any>(params: {
+  address: string;
+  functionName: string;
+  args?: any[];
+}): Promise<T> {
+  return (await genlayerClient.readContract({
+    address: params.address as `0x${string}`,
+    functionName: params.functionName,
+    args: params.args || [],
+  })) as T;
+}
+
+export async function getEscrowSummary(escrowAddress: string): Promise<EscrowSummary> {
+  return await readContractState<EscrowSummary>({
+    address: escrowAddress,
+    functionName: 'get_escrow_summary',
+    args: [],
+  });
+}
+
+export async function getProject(escrowAddress: string, projectId: number): Promise<Project> {
+  return await readContractState<Project>({
+    address: escrowAddress,
+    functionName: 'get_project',
+    args: [projectId],
+  });
+}
+
+export async function listMilestones(escrowAddress: string, projectId: number): Promise<Milestone[]> {
+  return await readContractState<Milestone[]>({
+    address: escrowAddress,
+    functionName: 'list_milestones',
+    args: [projectId],
+  });
 }
 
 export async function callRpc(method: string, params: any[] = []): Promise<any> {

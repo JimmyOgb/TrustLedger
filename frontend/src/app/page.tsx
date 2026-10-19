@@ -16,6 +16,9 @@ import {
   getProjectEscrowAddress,
   getEscrowContractAddress,
   isV2Deployed,
+  getEscrowSummary,
+  getProject,
+  listMilestones,
 } from '@/lib/genlayer';
 import {
   ShieldCheck,
@@ -61,9 +64,12 @@ export default function TrustLedgerDashboard() {
   const [submissionNotes, setSubmissionNotes] = useState<string>('Deliverable completed according to specifications.');
   const [disputeReason, setDisputeReason] = useState<string>('Scope discrepancy regarding acceptance criteria.');
 
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   const refreshData = async () => {
     try {
       setLoading(true);
+      setFetchError(null);
       // Resolve version-aware escrow address for dashboard overview
       let targetEscrow: string;
       try {
@@ -73,41 +79,20 @@ export default function TrustLedgerDashboard() {
       }
       setCurrentEscrowAddress(targetEscrow);
 
-      // Read escrow summary from the resolved contract
-      const summaryResult = await callRpc('gen_call', [
-        {
-          type: 'read',
-          to: targetEscrow,
-          from: '0x0000000000000000000000000000000000000000',
-          data: { method: 'get_escrow_summary', args: [] },
-        },
-      ]);
+      // Read escrow summary from the resolved contract using genlayer-js
+      const summaryResult = await getEscrowSummary(targetEscrow);
       if (summaryResult) {
         setEscrowSummary(summaryResult);
       }
 
       // Read project #1 using authoritative project escrow resolver (preserves Run 2 for historical project 1)
       const projectEscrow = getProjectEscrowAddress(1);
-      const projResult = await callRpc('gen_call', [
-        {
-          type: 'read',
-          to: projectEscrow,
-          from: '0x0000000000000000000000000000000000000000',
-          data: { method: 'get_project', args: [1] },
-        },
-      ]);
+      const projResult = await getProject(projectEscrow, 1);
       if (projResult) {
         setProject(projResult);
       }
 
-      const msList = await callRpc('gen_call', [
-        {
-          type: 'read',
-          to: projectEscrow,
-          from: '0x0000000000000000000000000000000000000000',
-          data: { method: 'list_milestones', args: [1] },
-        },
-      ]);
+      const msList = await listMilestones(projectEscrow, 1);
       if (Array.isArray(msList)) {
         setMilestones(msList);
       }
@@ -123,6 +108,7 @@ export default function TrustLedgerDashboard() {
       setClientVaultBalance(cvBal);
     } catch (err: any) {
       console.error('Error fetching on-chain data:', err);
+      setFetchError(err?.message || 'Failed to read on-chain data from GenLayer StudioNet RPC');
     } finally {
       setLoading(false);
     }
@@ -268,6 +254,16 @@ export default function TrustLedgerDashboard() {
 
       {/* Main Content Dashboard */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {fetchError && (
+          <div className="p-4 rounded-xl border bg-rose-500/10 border-rose-500/30 text-rose-200 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-semibold text-rose-300">StudioNet RPC State Read Error</h4>
+              <p className="text-xs text-rose-200/90 mt-0.5">{fetchError}</p>
+            </div>
+          </div>
+        )}
+
         {actionMessage && (
           <div
             className={`p-4 rounded-xl border flex items-start gap-3 ${
