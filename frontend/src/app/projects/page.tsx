@@ -53,20 +53,14 @@ export default function ProjectsPage() {
       setFetchError(null);
 
       const targetEscrow = RUN_2_CONTRACTS.escrow;
-      const v2Escrow = '0x4Ec472F1fEc41cB89Fd11DfD788679786E874336';
 
-      const [p1, msList, v2Sum] = await Promise.all([
+      const [p1, msList] = await Promise.all([
         getProject(targetEscrow, 1),
         listMilestones(targetEscrow, 1),
-        getEscrowSummary(v2Escrow).catch((err) => {
-          console.warn('V2 summary fetch warning:', err);
-          return null;
-        }),
       ]);
 
       setProject(p1);
       setMilestones(Array.isArray(msList) ? msList : []);
-      setV2Summary(v2Sum);
     } catch (err: any) {
       console.error('Error loading projects:', err);
       setFetchError(err?.message || 'Failed to load projects from GenLayer StudioNet RPC');
