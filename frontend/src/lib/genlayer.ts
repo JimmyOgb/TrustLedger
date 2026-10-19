@@ -206,14 +206,31 @@ export interface EscrowSummary {
   claim_count?: number;
 }
 
-export const genlayerClient = createClient({ chain: studionet });
+function getClientChain() {
+  if (typeof window !== 'undefined') {
+    return {
+      ...studionet,
+      rpcUrls: {
+        default: { http: [window.location.origin + '/api/rpc'] },
+      },
+    };
+  }
+  return studionet;
+}
+
+export function getGenlayerClient() {
+  return createClient({ chain: getClientChain() });
+}
+
+export const genlayerClient = createClient({ chain: getClientChain() });
 
 export async function readContractState<T = any>(params: {
   address: string;
   functionName: string;
   args?: any[];
 }): Promise<T> {
-  return (await genlayerClient.readContract({
+  const client = getGenlayerClient();
+  return (await client.readContract({
     address: params.address as `0x${string}`,
     functionName: params.functionName,
     args: params.args || [],
@@ -245,7 +262,8 @@ export async function listMilestones(escrowAddress: string, projectId: number): 
 }
 
 export async function callRpc(method: string, params: any[] = []): Promise<any> {
-  const res = await fetch(STUDIONET_CONFIG.rpcUrl, {
+  const endpoint = typeof window !== 'undefined' ? '/api/rpc' : STUDIONET_CONFIG.rpcUrl;
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
