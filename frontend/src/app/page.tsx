@@ -79,30 +79,30 @@ export default function TrustLedgerDashboard() {
       }
       setCurrentEscrowAddress(targetEscrow);
 
-      // Read escrow summary from the resolved contract using genlayer-js
-      const summaryResult = await getEscrowSummary(targetEscrow);
+      // Read project #1 using authoritative project escrow resolver (preserves Run 2 for historical project 1)
+      const projectEscrow = getProjectEscrowAddress(1);
+
+      // Execute all reads concurrently to minimize round-trip latency
+      const [summaryResult, projResult, msList, [eBal, fvBal, cvBal]] = await Promise.all([
+        getEscrowSummary(targetEscrow),
+        getProject(projectEscrow, 1),
+        listMilestones(projectEscrow, 1),
+        Promise.all([
+          getOnChainBalance(targetEscrow),
+          getOnChainBalance(CONTRACT_ADDRESSES.freelancerVault),
+          getOnChainBalance(CONTRACT_ADDRESSES.clientRefundVault),
+        ]),
+      ]);
+
       if (summaryResult) {
         setEscrowSummary(summaryResult);
       }
-
-      // Read project #1 using authoritative project escrow resolver (preserves Run 2 for historical project 1)
-      const projectEscrow = getProjectEscrowAddress(1);
-      const projResult = await getProject(projectEscrow, 1);
       if (projResult) {
         setProject(projResult);
       }
-
-      const msList = await listMilestones(projectEscrow, 1);
       if (Array.isArray(msList)) {
         setMilestones(msList);
       }
-
-      // Fetch live on-chain balances directly via eth_getBalance
-      const [eBal, fvBal, cvBal] = await Promise.all([
-        getOnChainBalance(targetEscrow),
-        getOnChainBalance(CONTRACT_ADDRESSES.freelancerVault),
-        getOnChainBalance(CONTRACT_ADDRESSES.clientRefundVault),
-      ]);
       setContractLiveBalance(eBal);
       setFreelancerVaultBalance(fvBal);
       setClientVaultBalance(cvBal);
