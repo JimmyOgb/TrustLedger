@@ -43,3 +43,4 @@ Thumbs.db
 # Vercel & Scratch
 .vercel/
 scratch/
+scripts/*.png
