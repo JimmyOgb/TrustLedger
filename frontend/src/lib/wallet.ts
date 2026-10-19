@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { STUDIONET_CONFIG } from './genlayer';
 
 export interface WalletState {
@@ -13,9 +13,17 @@ export interface WalletState {
   providerAvailable: boolean;
 }
 
+export interface WalletContextType extends WalletState {
+  connectWallet: () => Promise<void>;
+  disconnectWallet: () => void;
+  switchToStudioNet: () => Promise<void>;
+}
+
 const STUDIONET_HEX_CHAIN_ID = '0xf22f'; // 61999
 
-export function useWallet() {
+const WalletContext = createContext<WalletContextType | null>(null);
+
+export function WalletProvider({ children }: { children: ReactNode }) {
   const [wallet, setWallet] = useState<WalletState>({
     address: null,
     chainId: null,
@@ -194,11 +202,32 @@ export function useWallet() {
     handleDisconnect();
   };
 
-  return {
+  const value: WalletContextType = {
     ...wallet,
     connectWallet,
     disconnectWallet,
     switchToStudioNet,
+  };
+
+  return React.createElement(WalletContext.Provider, { value }, children);
+}
+
+export function useWallet(): WalletContextType {
+  const context = useContext(WalletContext);
+  if (context) return context;
+
+  // Fallback if rendered outside of WalletProvider
+  return {
+    address: null,
+    chainId: null,
+    isConnected: false,
+    isConnecting: false,
+    isWrongNetwork: false,
+    error: null,
+    providerAvailable: typeof window !== 'undefined' && Boolean((window as any).ethereum),
+    connectWallet: async () => {},
+    disconnectWallet: () => {},
+    switchToStudioNet: async () => {},
   };
 }
 

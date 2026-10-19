@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { WalletProvider } from '@/lib/wallet';
+import { AppShell } from '@/components/AppShell';
 
 export const metadata: Metadata = {
   title: 'TrustLedger | GEN Milestone Escrow on GenLayer StudioNet',
@@ -13,8 +15,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="antialiased selection:bg-emerald-500 selection:text-white">
-        {children}
+      <body className="antialiased selection:bg-blue-600 selection:text-white">
+        <WalletProvider>
+          <AppShell>{children}</AppShell>
+        </WalletProvider>
       </body>
     </html>
   );

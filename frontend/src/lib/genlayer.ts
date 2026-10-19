@@ -258,13 +258,39 @@ export async function callRpc(method: string, params: any[] = []): Promise<any> 
 }
 
 export async function getOnChainBalance(address: string): Promise<bigint> {
+  const hexBal = await callRpc('eth_getBalance', [address, 'latest']);
+  return BigInt(hexBal || '0x0');
+}
+
+export async function getOnChainBalanceStrict(address: string): Promise<bigint> {
+  return await getOnChainBalance(address);
+}
+
+export async function checkRpcHealth(): Promise<{ ok: boolean; latencyMs: number; chainIdHex?: string; error?: string }> {
+  const start = Date.now();
   try {
-    const hexBal = await callRpc('eth_getBalance', [address, 'latest']);
-    return BigInt(hexBal || '0x0');
-  } catch (err) {
-    console.error('Failed to get on-chain balance:', err);
-    return 0n;
+    const chainIdHex = await callRpc('eth_chainId');
+    const latencyMs = Date.now() - start;
+    return { ok: true, latencyMs, chainIdHex };
+  } catch (err: any) {
+    return { ok: false, latencyMs: Date.now() - start, error: err?.message || 'RPC unreachable' };
   }
+}
+
+export async function getDeployer(escrowAddress: string): Promise<string> {
+  return await readContractState<string>({
+    address: escrowAddress,
+    functionName: 'get_deployer',
+    args: [],
+  });
+}
+
+export async function isVaultApproved(escrowAddress: string, vaultAddress: string): Promise<boolean> {
+  return await readContractState<boolean>({
+    address: escrowAddress,
+    functionName: 'is_vault_approved',
+    args: [vaultAddress],
+  });
 }
 
 export function formatWeiToGen(wei: number | bigint | string): string {
@@ -280,3 +306,4 @@ export function formatWeiRaw(wei: number | bigint | string): string {
   const n = BigInt(wei || 0);
   return `${n.toLocaleString()} wei`;
 }
+
