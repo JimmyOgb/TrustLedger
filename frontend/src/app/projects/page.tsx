@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { V2ProjectList } from '@/components/V2ProjectList';
 import {
   RUN_2_CONTRACTS,
   Project,
@@ -313,37 +314,7 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        {/* V2 Registry Notice */}
-        <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <Lock className="w-4 h-4 text-blue-400" />
-              <span>TrustLedger V2 Project Registry</span>
-            </div>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-              PRE-DEPLOYMENT GATE
-            </span>
-          </div>
-
-          <p className="text-xs text-slate-400 leading-relaxed">
-            The TrustLedger V2 contract is deployed at{' '}
-            <code className="font-mono text-slate-300 bg-[#0e1629] px-1.5 py-0.5 rounded border border-slate-800">
-              0x4Ec472F1fEc41cB89Fd11DfD788679786E874336
-            </code>{' '}
-            with 0 active projects on-chain (verified via <code className="font-mono text-slate-300">get_escrow_summary</code>).
-            Multi-project creation is held at the pre-deployment safety gate (<code className="font-mono text-slate-300">NEXT_PUBLIC_V2_DEPLOYED=false</code>).
-          </p>
-
-          <div className="pt-2">
-            <Link
-              href="/projects/new"
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Configure New Project & Review Transaction</span>
-            </Link>
-          </div>
-        </div>
+        <V2ProjectList />
       </div>
     </div>
   );

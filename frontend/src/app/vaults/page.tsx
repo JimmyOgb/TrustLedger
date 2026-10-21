@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { V2LivePanel } from '@/components/V2LivePanel';
 import Link from 'next/link';
 import {
   RUN_2_CONTRACTS,
@@ -69,7 +70,7 @@ export default function VaultsPage() {
         getOnChainBalanceStrict(RUN_2_CONTRACTS.escrow),
         getOnChainBalanceStrict(CONTRACT_ADDRESSES.freelancerVault),
         getOnChainBalanceStrict(CONTRACT_ADDRESSES.clientRefundVault),
-        getOnChainBalanceStrict(v2Address).catch(() => 0n),
+        getOnChainBalanceStrict(v2Address),
       ]);
 
       setBalances({
@@ -99,7 +100,7 @@ export default function VaultsPage() {
       role: 'Beneficiary Payout Storage',
       status: 'Settled on StudioNet',
       description:
-        'Independent recipient vault contract. Received Milestone 1 payout (150,000 wei) upon verified completion.',
+        'Independent recipient vault contract. Historical Run 2 recipient vault (Milestone 1 payout recorded in ACCEPTANCE_REPORT.md). Live balance shown above.',
     },
     {
       name: 'Client Refund Vault',
@@ -109,7 +110,7 @@ export default function VaultsPage() {
       role: 'Depositor Refund Custody',
       status: 'Settled on StudioNet',
       description:
-        'Independent refund vault contract. Received Milestone 2 refund (200,000 wei) following mutual arbitration resolution.',
+        'Independent refund vault contract. Historical Run 2 refund vault (Milestone 2 refund recorded in ACCEPTANCE_REPORT.md). Live balance shown above.',
     },
     {
       name: 'Preserved Run 2 Escrow Contract',
@@ -138,6 +139,7 @@ export default function VaultsPage() {
 
   return (
     <div className="space-y-6">
+      <V2LivePanel />
       {/* Toast Feedback */}
       {copiedText && (
         <div className="fixed top-5 right-5 z-50 bg-blue-600 text-white px-4 py-2 rounded-xl shadow-xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-2">

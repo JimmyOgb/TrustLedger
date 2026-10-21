@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { V2LivePanel } from '@/components/V2LivePanel';
 import { useWallet, shortenAddress } from '@/lib/wallet';
 import {
   STUDIONET_CONFIG,
@@ -64,6 +65,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
+      <V2LivePanel />
       {/* Toast Feedback */}
       {copiedText && (
         <div className="fixed top-5 right-5 z-50 bg-blue-600 text-white px-4 py-2 rounded-xl shadow-xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-2">
@@ -288,13 +290,13 @@ export default function SettingsPage() {
           <div className="bg-[#0e1629] p-3.5 rounded-xl border border-slate-800/60 space-y-1">
             <span className="text-[10px] text-slate-400 font-semibold uppercase">Freelancer Vault</span>
             <div className="font-mono text-emerald-400 truncate">{CONTRACT_ADDRESSES.freelancerVault}</div>
-            <span className="text-[10px] text-slate-400 block">Settled (150,000 wei)</span>
+            <span className="text-[10px] text-slate-400 block">Historical Run 2 payout vault</span>
           </div>
 
           <div className="bg-[#0e1629] p-3.5 rounded-xl border border-slate-800/60 space-y-1">
             <span className="text-[10px] text-slate-400 font-semibold uppercase">Client Refund Vault</span>
             <div className="font-mono text-indigo-400 truncate">{CONTRACT_ADDRESSES.clientRefundVault}</div>
-            <span className="text-[10px] text-slate-400 block">Settled (200,000 wei)</span>
+            <span className="text-[10px] text-slate-400 block">Historical Run 2 refund vault</span>
           </div>
 
           <div className="bg-[#0e1629] p-3.5 rounded-xl border border-slate-800/60 space-y-1">
