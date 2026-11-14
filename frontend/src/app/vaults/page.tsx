@@ -10,7 +10,10 @@ import {
   formatWeiRaw,
   formatWeiToGen,
 } from '@/lib/genlayer';
-import { shortenAddress } from '@/lib/wallet';
+import { useWallet, shortenAddress } from '@/lib/wallet';
+import { V2_ADDRESS, v2Deployer, v2IsVaultApproved } from '@/lib/escrow';
+import { canRegisterVault, validateVaultAddress, sameAddress, type Check } from '@/lib/escrow-core';
+import { TxConfirmDialog, useWriteBlocker, type PendingTx } from '@/components/TxDialog';
 import {
   Landmark,
   Shield,
@@ -18,11 +21,12 @@ import {
   RefreshCw,
   XCircle,
   Copy,
-  Check,
+  Check as CheckIcon,
   Lock,
   ArrowRight,
   Info,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface VaultItem {
@@ -36,6 +40,13 @@ interface VaultItem {
 }
 
 export default function VaultsPage() {
+  const wallet = useWallet();
+  const blocker = useWriteBlocker();
+  const [deployer, setDeployer] = useState<string>('');
+  const [vaultToRegister, setVaultToRegister] = useState<string>('');
+  const [vaultApprovalStatus, setVaultApprovalStatus] = useState<boolean | null>(null);
+  const [checkingVault, setCheckingVault] = useState<boolean>(false);
+  const [tx, setTx] = useState<PendingTx | null>(null);
   const [balances, setBalances] = useState<{
     escrow: bigint | null;
     freelancerVault: bigint | null;
@@ -64,13 +75,14 @@ export default function VaultsPage() {
       setLoading(true);
       setFetchError(null);
 
-      const v2Address = '0x4Ec472F1fEc41cB89Fd11DfD788679786E874336';
+      const v2Address = V2_ADDRESS || '0x4Ec472F1fEc41cB89Fd11DfD788679786E874336';
 
-      const [eBal, fvBal, cvBal, v2Bal] = await Promise.all([
+      const [eBal, fvBal, cvBal, v2Bal, dep] = await Promise.all([
         getOnChainBalanceStrict(RUN_2_CONTRACTS.escrow),
         getOnChainBalanceStrict(CONTRACT_ADDRESSES.freelancerVault),
         getOnChainBalanceStrict(CONTRACT_ADDRESSES.clientRefundVault),
         getOnChainBalanceStrict(v2Address),
+        v2Deployer().catch(() => ''),
       ]);
 
       setBalances({
@@ -79,6 +91,7 @@ export default function VaultsPage() {
         clientVault: cvBal,
         v2Escrow: v2Bal,
       });
+      setDeployer(dep);
     } catch (err: any) {
       console.error('Error loading vault balances:', err);
       setFetchError(err?.message || 'Failed to read on-chain balances from StudioNet RPC');
@@ -86,6 +99,48 @@ export default function VaultsPage() {
       setLoading(false);
     }
   }, []);
+
+  const checkVaultApproval = async (addr: string) => {
+    if (!validateVaultAddress(addr).ok) {
+      setVaultApprovalStatus(null);
+      return;
+    }
+    setCheckingVault(true);
+    try {
+      const approved = await v2IsVaultApproved(addr.trim());
+      setVaultApprovalStatus(approved);
+    } catch {
+      setVaultApprovalStatus(null);
+    } finally {
+      setCheckingVault(false);
+    }
+  };
+
+  const startRegisterVault = () => {
+    const addr = vaultToRegister.trim();
+    if (!V2_ADDRESS || !validateVaultAddress(addr).ok) return;
+
+    setTx({
+      key: `register_vault:${addr}`,
+      action: `Register approved vault ${shortenAddress(addr)}`,
+      contract: V2_ADDRESS,
+      method: 'register_approved_vault',
+      args: [addr],
+      valueWei: 0n,
+      preflight: async () => {
+        const isApproved = await v2IsVaultApproved(addr).catch(() => false);
+        return canRegisterVault(wallet.address ?? '', deployer, addr, isApproved);
+      },
+      verify: async () => {
+        const approved = await v2IsVaultApproved(addr);
+        setVaultApprovalStatus(approved);
+        return approved;
+      },
+      onFinished: () => {
+        loadBalances();
+      },
+    });
+  };
 
   useEffect(() => {
     loadBalances();
@@ -143,7 +198,7 @@ export default function VaultsPage() {
       {/* Toast Feedback */}
       {copiedText && (
         <div className="fixed top-5 right-5 z-50 bg-blue-600 text-white px-4 py-2 rounded-xl shadow-xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-2">
-          <Check className="w-4 h-4" />
+          <CheckIcon className="w-4 h-4" />
           <span>Copied {copiedText} to clipboard!</span>
         </div>
       )}
@@ -214,6 +269,117 @@ export default function VaultsPage() {
         </div>
       </div>
 
+      {/* V2 Deployer Vault Approval Panel */}
+      <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-5 space-y-4" data-testid="v2-vault-registration">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <Shield className="w-4 h-4 text-emerald-400" />
+            <span>V2 Recipient Vault Registration & Approvals</span>
+          </div>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+            V2 Deployer: {deployer ? shortenAddress(deployer) : 'Loading...'}
+          </span>
+        </div>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          On TrustLedger V2, only vaults approved by the contract deployer can receive withdrawn claims via <code className="font-mono text-emerald-300">withdraw_claim</code>.
+          This prevents unauthorized or unverified contract addresses from accepting asynchronous value dispatches.
+        </p>
+
+        <div className="space-y-3">
+          <label className="block text-xs text-slate-300">
+            Recipient Vault Address to Register
+            <div className="flex gap-2 mt-1">
+              <input
+                className="flex-1 bg-[#0e1629] border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500"
+                placeholder="0x... (40-hex address)"
+                value={vaultToRegister}
+                onChange={(e) => {
+                  setVaultToRegister(e.target.value);
+                  checkVaultApproval(e.target.value);
+                }}
+                data-testid="input-vault-address"
+              />
+              <button
+                type="button"
+                className="px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs font-medium"
+                onClick={() => checkVaultApproval(vaultToRegister)}
+                disabled={checkingVault || !vaultToRegister}
+              >
+                {checkingVault ? 'Checking...' : 'Check Status'}
+              </button>
+            </div>
+          </label>
+
+          {/* Quick presets */}
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="text-slate-400">Quick fill:</span>
+            <button
+              type="button"
+              className="text-blue-400 hover:underline font-mono"
+              onClick={() => {
+                setVaultToRegister(CONTRACT_ADDRESSES.freelancerVault);
+                checkVaultApproval(CONTRACT_ADDRESSES.freelancerVault);
+              }}
+            >
+              Freelancer Vault ({shortenAddress(CONTRACT_ADDRESSES.freelancerVault)})
+            </button>
+            <span className="text-slate-600">·</span>
+            <button
+              type="button"
+              className="text-blue-400 hover:underline font-mono"
+              onClick={() => {
+                setVaultToRegister(CONTRACT_ADDRESSES.clientRefundVault);
+                checkVaultApproval(CONTRACT_ADDRESSES.clientRefundVault);
+              }}
+            >
+              Client Refund Vault ({shortenAddress(CONTRACT_ADDRESSES.clientRefundVault)})
+            </button>
+          </div>
+
+          {vaultApprovalStatus !== null && (
+            <div className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+              vaultApprovalStatus ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200' : 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+            }`}>
+              <div className="flex items-center gap-2">
+                {vaultApprovalStatus ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <AlertTriangle className="w-4 h-4 text-amber-400" />}
+                <span>
+                  {vaultApprovalStatus ? 'This vault is APPROVED on TrustLedger V2. Eligible for withdraw_claim.' : 'This vault is NOT approved on TrustLedger V2.'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {wallet.address && deployer && !sameAddress(wallet.address, deployer) && (
+            <div className="text-[11px] text-slate-400">
+              Note: Connected wallet ({shortenAddress(wallet.address)}) is not the V2 contract deployer ({shortenAddress(deployer)}). Only the deployer can sign <code className="font-mono text-emerald-300">register_approved_vault</code> transactions.
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="w-full px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            disabled={
+              !validateVaultAddress(vaultToRegister).ok ||
+              vaultApprovalStatus === true ||
+              !wallet.address ||
+              !sameAddress(wallet.address, deployer) ||
+              !!blocker
+            }
+            onClick={startRegisterVault}
+            data-testid="btn-register-vault"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>
+              {vaultApprovalStatus === true
+                ? 'Vault Already Approved'
+                : !sameAddress(wallet.address, deployer)
+                ? 'Deployer Wallet Required to Approve'
+                : 'Review register_approved_vault Transaction'}
+            </span>
+          </button>
+        </div>
+      </div>
+
       {/* Vaults Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {vaultItems.map((item, idx) => (
@@ -276,6 +442,8 @@ export default function VaultsPage() {
           </div>
         ))}
       </div>
+
+      <TxConfirmDialog tx={tx} onClose={() => setTx(null)} />
     </div>
   );
 }

@@ -43,6 +43,9 @@ export interface MilestoneView {
   evaluated_evidence_hash: string;
   verdict: string;
   settlement_count: number;
+  dispute_reason?: string;
+  dispute_raised_by?: string;
+  resolution_notes?: string;
 }
 
 export interface ClaimView {
@@ -145,6 +148,29 @@ export function validateEvidence(e: { url: string; hash: string; notes: string }
   return OK;
 }
 
+export function validateDispute(reason: string): Check {
+  const clean = (reason ?? '').trim();
+  if (clean.length < 5) return fail('Dispute reason must be at least 5 characters.');
+  return OK;
+}
+
+export function validateResolution(notes: string, resolution?: string): Check {
+  if (resolution && !['RELEASE', 'REFUND'].includes(resolution.trim().toUpperCase())) {
+    return fail("Resolution must be 'RELEASE' or 'REFUND'.");
+  }
+  const clean = (notes ?? '').trim();
+  if (clean.length < 5) return fail('Resolution notes must be at least 5 characters.');
+  return OK;
+}
+
+export function validateVaultAddress(vaultAddress: string): Check {
+  const s = (vaultAddress ?? '').trim();
+  if (!isAddress(s) || sameAddress(s, ZERO_ADDRESS)) {
+    return fail('Vault address must be a valid non-zero 0x-prefixed 40-hex address.');
+  }
+  return OK;
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle preconditions against FRESH on-chain state
 // ---------------------------------------------------------------------------
@@ -220,6 +246,55 @@ export function canRefund(project: ProjectView, m: MilestoneView, caller: string
   return OK;
 }
 
+export function canOpenDispute(project: ProjectView, m: MilestoneView, caller: string): Check {
+  const isParty = sameAddress(caller, project.client) || sameAddress(caller, m.freelancer);
+  if (!isParty) return fail('Only the project client or freelancer can open a dispute.');
+  if (m.status === 'DISPUTED') return fail('Milestone is already in DISPUTED status.');
+  if (m.status === 'RESOLVED_RELEASE' || m.status === 'RESOLVED_REFUND') return fail('Dispute has already been resolved for this milestone.');
+  const s = notSettled(m);
+  if (!s.ok) return s;
+  const eligibleStatuses = ['FUNDED', 'EVIDENCE_SUBMITTED', 'APPROVED', 'REJECTED', 'INCONCLUSIVE'];
+  if (!eligibleStatuses.includes(m.status)) return fail(`Cannot open dispute when milestone status is ${m.status}.`);
+  return OK;
+}
+
+export function canResolveDispute(
+  project: ProjectView,
+  m: MilestoneView,
+  caller: string,
+  resolution: 'RELEASE' | 'REFUND'
+): Check {
+  if (m.status !== 'DISPUTED') return fail(`Milestone must be in DISPUTED status to resolve (current: ${m.status}).`);
+  const cleanRes = (resolution ?? '').trim().toUpperCase() as 'RELEASE' | 'REFUND';
+  if (!['RELEASE', 'REFUND'].includes(cleanRes)) return fail("Resolution must be 'RELEASE' or 'REFUND'.");
+
+  const isArb = sameAddress(caller, project.arbitrator);
+  const isClient = sameAddress(caller, project.client);
+  const isFree = sameAddress(caller, m.freelancer);
+
+  if (isArb) return OK;
+  if (isClient && cleanRes === 'RELEASE') return OK;
+  if (isFree && cleanRes === 'REFUND') return OK;
+
+  if (isClient && cleanRes === 'REFUND') {
+    return fail('Client cannot unilaterally resolve a dispute in their own favor (REFUND). Concede to RELEASE or await arbitrator determination.');
+  }
+  if (isFree && cleanRes === 'RELEASE') {
+    return fail('Freelancer cannot unilaterally resolve a dispute in their own favor (RELEASE). Concede to REFUND or await arbitrator determination.');
+  }
+  return fail(`Sender is not authorized to resolve dispute as ${cleanRes}.`);
+}
+
+export function canRegisterVault(caller: string, deployer: string, vaultAddress: string, alreadyApproved: boolean = false): Check {
+  if (!sameAddress(caller, deployer)) {
+    return fail(`Only the contract deployer (${deployer}) can register approved vaults.`);
+  }
+  const v = validateVaultAddress(vaultAddress);
+  if (!v.ok) return v;
+  if (alreadyApproved) return fail('This vault address is already approved by the contract.');
+  return OK;
+}
+
 export function canWithdraw(claim: ClaimView | null, caller: string, vaultApproved: boolean): Check {
   if (!claim) return fail('No claim exists for this milestone.');
   if (!sameAddress(caller, claim.beneficiary) && !sameAddress(caller, claim.recipient_vault)) return fail('Only the claim beneficiary or its designated vault can withdraw.');
@@ -233,11 +308,12 @@ export function canWithdraw(claim: ClaimView | null, caller: string, vaultApprov
 /** Which settlement actions the UI may offer, given current on-chain state (party checks excluded). */
 export function settlementOptions(m: MilestoneView): { release: boolean; refund: boolean; note: string } {
   if (m.status === 'RELEASED' || m.status === 'REFUNDED' || m.settlement_count > 0) return { release: false, refund: false, note: 'Settled.' };
+  if (m.status === 'DISPUTED') return { release: false, refund: false, note: `DISPUTED: Active dispute open (${m.dispute_reason ? `"${m.dispute_reason}"` : 'pending resolution'}). Arbitrator determination or concession required before settlement.` };
   if (m.status === 'INCONCLUSIVE') return { release: false, refund: false, note: 'INCONCLUSIVE: no settlement permitted. The freelancer may resubmit evidence, or a party may open a dispute.' };
   if (m.status === 'APPROVED') return isEvaluationFresh(m) && m.verdict === 'APPROVED' ? { release: true, refund: false, note: 'Approved by authoritative evaluation.' } : { release: false, refund: false, note: 'Evaluation is stale.' };
-  if (m.status === 'REJECTED') return isEvaluationFresh(m) && m.verdict === 'REJECTED' ? { release: false, refund: true, note: 'Rejected by authoritative evaluation. The freelancer may also resubmit.' } : { release: false, refund: false, note: 'Evaluation is stale.' };
-  if (m.status === 'RESOLVED_RELEASE') return { release: true, refund: false, note: 'Dispute resolved: release.' };
-  if (m.status === 'RESOLVED_REFUND') return { release: false, refund: true, note: 'Dispute resolved: refund.' };
+  if (m.status === 'REJECTED') return isEvaluationFresh(m) && m.verdict === 'REJECTED' ? { release: false, refund: true, note: 'Rejected by authoritative evaluation. The freelancer may also resubmit, or either party may dispute.' } : { release: false, refund: false, note: 'Evaluation is stale.' };
+  if (m.status === 'RESOLVED_RELEASE') return { release: true, refund: false, note: `Dispute resolved to RELEASE (${m.resolution_notes || 'Resolved'}). Ready to release funds to freelancer.` };
+  if (m.status === 'RESOLVED_REFUND') return { release: false, refund: true, note: `Dispute resolved to REFUND (${m.resolution_notes || 'Resolved'}). Ready to refund funds to client.` };
   return { release: false, refund: false, note: `No settlement available in ${m.status}.` };
 }
 

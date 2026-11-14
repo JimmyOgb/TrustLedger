@@ -6,15 +6,16 @@ import { useParams } from 'next/navigation';
 import { useWallet, shortenAddress } from '@/lib/wallet';
 import { formatWeiToGen } from '@/lib/genlayer';
 import {
-  V2_ADDRESS, v2GetProjectOrNull, v2ListMilestones, v2GetMilestone, v2Summary, v2GetClaimByMilestone, v2IsVaultApproved,
+  V2_ADDRESS, v2GetProjectOrNull, v2ListMilestones, v2GetMilestone, v2Summary, v2GetClaimByMilestone, v2IsVaultApproved, v2Deployer,
 } from '@/lib/escrow';
 import {
   validateAddMilestone, validateEvidence, parseWeiAmount, canAddMilestone, canFund, canSubmitEvidence, canEvaluate,
   canRelease, canRefund, canWithdraw, settlementOptions, claimDisplayStatus, isEvaluationFresh, sameAddress, toBig,
+  validateDispute, validateResolution, canOpenDispute, canResolveDispute, canRegisterVault,
   type Criterion, type MilestoneView, type ProjectView, type ClaimView, type Check, type TxUpdate,
 } from '@/lib/escrow-core';
 import { TxConfirmDialog, WriteBlockerNotice, useWriteBlocker, type PendingTx } from '@/components/TxDialog';
-import { ArrowLeft, AlertTriangle, RefreshCw, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, RefreshCw, Plus, Trash2, CheckCircle2 } from 'lucide-react';
 
 type M = MilestoneView & Record<string, any>;
 type P = ProjectView & Record<string, any>;
@@ -36,6 +37,7 @@ export default function V2ProjectPage() {
   const wallet = useWallet();
   const blocker = useWriteBlocker();
   const [project, setProject] = useState<P | null>(null);
+  const [deployer, setDeployer] = useState<string>('');
   const [milestones, setMilestones] = useState<M[]>([]);
   const [claims, setClaims] = useState<Record<number, { claim: ClaimView | null; vaultApproved: boolean | null }>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -49,7 +51,11 @@ export default function V2ProjectPage() {
       const p = await v2GetProjectOrNull(pid);
       setProject(p);
       if (!p) { setLoadError(`Project #${pid} does not exist on the V2 contract.`); return; }
-      const ms = await v2ListMilestones(pid);
+      const [ms, dep] = await Promise.all([
+        v2ListMilestones(pid),
+        v2Deployer().catch(() => ''),
+      ]);
+      setDeployer(dep);
       setMilestones(ms);
       const cl: typeof claims = {};
       for (const m of ms) {
@@ -105,7 +111,7 @@ export default function V2ProjectPage() {
 
       {project && milestones.length === 0 && !loading && <div className="text-slate-400">No milestones on-chain yet.</div>}
       {project && milestones.map((m) => (
-        <MilestoneCard key={m.milestone_id} project={project} m={m} me={me} blocked={!!blocker} open={open} claimInfo={claims[m.milestone_id]} />
+        <MilestoneCard key={m.milestone_id} project={project} m={m} me={me} deployer={deployer} blocked={!!blocker} open={open} claimInfo={claims[m.milestone_id]} />
       ))}
 
       <TxConfirmDialog tx={tx} onClose={() => setTx(null)} />
@@ -185,13 +191,18 @@ function AddMilestone({ project, me, blocked, open }: { project: P; me: string; 
 }
 
 // ---------------------------------------------------------------------------
-function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
-  project: P; m: M; me: string; blocked: boolean; open: (t: PendingTx) => void;
+function MilestoneCard({ project, m, me, deployer, blocked, open, claimInfo }: {
+  project: P; m: M; me: string; deployer: string; blocked: boolean; open: (t: PendingTx) => void;
   claimInfo?: { claim: ClaimView | null; vaultApproved: boolean | null };
 }) {
   const [evUrl, setEvUrl] = useState('');
   const [evHash, setEvHash] = useState('');
   const [evNotes, setEvNotes] = useState('');
+  const [disputeReason, setDisputeReason] = useState('');
+  const [showDisputeForm, setShowDisputeForm] = useState(false);
+  const [resolutionChoice, setResolutionChoice] = useState<'RELEASE' | 'REFUND'>('RELEASE');
+  const [resolutionNotes, setResolutionNotes] = useState('');
+
   const contract = V2_ADDRESS!;
   const amount = toBig(m.amount_wei);
   const settle = settlementOptions(m);
@@ -200,6 +211,10 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
   const evCheck = canSubmitEvidence(m, me);
   const evInput = validateEvidence({ url: evUrl, hash: evHash, notes: evNotes });
   const evalCheck = canEvaluate(project, m, me);
+  const disputeCheck = canOpenDispute(project, m, me);
+  const disputeInput = validateDispute(disputeReason);
+  const resolveCheck = canResolveDispute(project, m, me, resolutionChoice);
+  const resolveInput = validateResolution(resolutionNotes, resolutionChoice);
   const relCheck = canRelease(project, m, me);
   const refCheck = canRefund(project, m, me);
   const claim = claimInfo?.claim ?? null;
@@ -241,6 +256,50 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
     });
   };
 
+  const openDisputeTx = () => {
+    const reason = disputeReason.trim();
+    open({
+      key: `dispute:${m.milestone_id}`,
+      action: `Open dispute on milestone #${m.milestone_id}`,
+      contract,
+      method: 'open_dispute',
+      args: [m.milestone_id, reason],
+      valueWei: 0n,
+      preflight: async () => {
+        const f = await freshMilestone(m); if ('err' in f) return f.err;
+        const p = await v2GetProjectOrNull(m.project_id); if (!p) return { ok: false, reason: 'Project missing.' };
+        return canOpenDispute(p, f.m, me);
+      },
+      verify: async () => {
+        const x = await v2GetMilestone(m.milestone_id);
+        return x.status === 'DISPUTED' && x.dispute_reason === reason;
+      },
+    });
+  };
+
+  const resolveDisputeTx = () => {
+    const notes = resolutionNotes.trim();
+    const choice = resolutionChoice;
+    open({
+      key: `resolve_dispute:${m.milestone_id}`,
+      action: `Resolve dispute on milestone #${m.milestone_id} as ${choice}`,
+      contract,
+      method: 'resolve_dispute',
+      args: [m.milestone_id, choice, notes],
+      valueWei: 0n,
+      preflight: async () => {
+        const f = await freshMilestone(m); if ('err' in f) return f.err;
+        const p = await v2GetProjectOrNull(m.project_id); if (!p) return { ok: false, reason: 'Project missing.' };
+        return canResolveDispute(p, f.m, me, choice);
+      },
+      verify: async () => {
+        const x = await v2GetMilestone(m.milestone_id);
+        const expected = choice === 'RELEASE' ? 'RESOLVED_RELEASE' : 'RESOLVED_REFUND';
+        return x.status === expected && x.resolution_notes === notes;
+      },
+    });
+  };
+
   const settleTx = (kind: 'release' | 'refund') => open({
     key: `settle:${m.milestone_id}`, action: `${kind === 'release' ? 'Release' : 'Refund'} milestone #${m.milestone_id} (creates a pull claim; no transfer yet)`, contract,
     method: kind === 'release' ? 'release_milestone' : 'refund_milestone', args: [m.milestone_id], valueWei: 0n,
@@ -253,6 +312,21 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
       const x = await v2GetMilestone(m.milestone_id);
       const c = await v2GetClaimByMilestone(m.milestone_id);
       return x.status === (kind === 'release' ? 'RELEASED' : 'REFUNDED') && !!c && c.status === 'CLAIMABLE' && toBig(c.amount_wei) === amount;
+    },
+  });
+
+  const registerVaultTx = (vaultAddr: string) => open({
+    key: `register_vault:${vaultAddr}`,
+    action: `Register approved recipient vault ${shortenAddress(vaultAddr)}`,
+    contract,
+    method: 'register_approved_vault',
+    args: [vaultAddr],
+    valueWei: 0n,
+    preflight: async () => {
+      return canRegisterVault(me, deployer, vaultAddr, await v2IsVaultApproved(vaultAddr));
+    },
+    verify: async () => {
+      return await v2IsVaultApproved(vaultAddr);
     },
   });
 
@@ -274,7 +348,12 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
     <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-4 space-y-3" data-testid={`milestone-${m.milestone_id}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-white">Milestone #{m.milestone_id}: {m.title}</h3>
-        <span className="px-2 py-0.5 rounded-full border border-slate-700 font-mono text-[11px] text-white" data-testid="ms-status">{m.status}</span>
+        <span className={`px-2 py-0.5 rounded-full border font-mono text-[11px] ${
+          m.status === 'DISPUTED' ? 'border-rose-500/50 text-rose-300 bg-rose-500/10' :
+          m.status === 'RESOLVED_RELEASE' || m.status === 'RESOLVED_REFUND' ? 'border-indigo-500/50 text-indigo-300 bg-indigo-500/10' :
+          m.status === 'RELEASED' ? 'border-emerald-500/50 text-emerald-300 bg-emerald-500/10' :
+          'border-slate-700 text-white'
+        }`} data-testid="ms-status">{m.status}</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-[11px] text-slate-300">
         <div>amount {amount.toString()} wei</div>
@@ -294,8 +373,125 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
         <Action label="Request evaluation" check={evalCheck} blocked={blocked} onClick={evaluate} testid="act-evaluate" />
         {settle.release && <Action label="Release to freelancer (claim)" check={relCheck} blocked={blocked} onClick={() => settleTx('release')} testid="act-release" />}
         {settle.refund && <Action label="Refund to client (claim)" check={refCheck} blocked={blocked} onClick={() => settleTx('refund')} testid="act-refund" />}
+        {disputeCheck.ok && m.status !== 'DISPUTED' && (
+          <button
+            type="button"
+            className={`${btn} bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600/30`}
+            onClick={() => setShowDisputeForm((v) => !v)}
+            data-testid="toggle-dispute"
+          >
+            {showDisputeForm ? 'Cancel dispute form' : 'Open dispute'}
+          </button>
+        )}
       </div>
       <div className="text-[11px] text-slate-400" data-testid="settle-note">Settlement: {settle.note}</div>
+
+      {showDisputeForm && disputeCheck.ok && m.status !== 'DISPUTED' && (
+        <div className="border border-amber-500/30 bg-amber-500/5 rounded-xl p-3 space-y-2" data-testid="open-dispute-form">
+          <div className="font-semibold text-amber-200">Open Milestone Dispute (Client or Freelancer)</div>
+          <p className="text-[11px] text-slate-400">
+            Calls <code className="font-mono text-emerald-300">open_dispute(milestone_id, reason)</code> on-chain. Freezes settlement until resolved by the designated arbitrator or party concession.
+          </p>
+          <textarea
+            className={input}
+            rows={2}
+            placeholder="Dispute reason (required, min 5 characters)"
+            value={disputeReason}
+            onChange={(e) => setDisputeReason(e.target.value)}
+            data-testid="dispute-reason-input"
+          />
+          {!disputeInput.ok && disputeReason && <div className="text-rose-300">{disputeInput.reason}</div>}
+          <Action
+            label="Review open_dispute transaction"
+            check={!disputeCheck.ok ? disputeCheck : disputeInput}
+            blocked={blocked}
+            onClick={openDisputeTx}
+            testid="act-dispute-submit"
+          />
+        </div>
+      )}
+
+      {m.status === 'DISPUTED' && (
+        <div className="border border-rose-500/40 bg-rose-500/10 rounded-xl p-3.5 space-y-3" data-testid="dispute-box">
+          <div className="flex items-center gap-2 font-bold text-rose-300">
+            <AlertTriangle className="w-4 h-4 text-rose-400" />
+            <span>Active Dispute Open (On-Chain)</span>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-2 text-[11px] text-slate-300">
+            <div>Dispute raised by: <span className="font-mono text-white">{shortenAddress(m.dispute_raised_by)}</span> ({sameAddress(m.dispute_raised_by, project.client) ? 'Client' : sameAddress(m.dispute_raised_by, m.freelancer) ? 'Freelancer' : 'Other'})</div>
+            <div>Reason: <span className="text-white italic font-mono">&ldquo;{m.dispute_reason}&rdquo;</span></div>
+          </div>
+          <p className="text-[10px] text-slate-400">
+            Under contract rules: The arbitrator can resolve as RELEASE or REFUND. The client can concede to RELEASE. The freelancer can concede to REFUND.
+          </p>
+
+          {(sameAddress(me, project.arbitrator) || sameAddress(me, project.client) || sameAddress(me, m.freelancer)) ? (
+            <div className="border-t border-rose-500/20 pt-3 space-y-2">
+              <div className="font-semibold text-slate-200">Resolve Dispute</div>
+              <div className="flex flex-wrap items-center gap-4 text-slate-300">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    name={`res-${m.milestone_id}`}
+                    value="RELEASE"
+                    checked={resolutionChoice === 'RELEASE'}
+                    onChange={() => setResolutionChoice('RELEASE')}
+                    disabled={sameAddress(me, m.freelancer) && !sameAddress(me, project.arbitrator)}
+                  />
+                  <span>RELEASE (Authorize freelancer payout)</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    name={`res-${m.milestone_id}`}
+                    value="REFUND"
+                    checked={resolutionChoice === 'REFUND'}
+                    onChange={() => setResolutionChoice('REFUND')}
+                    disabled={sameAddress(me, project.client) && !sameAddress(me, project.arbitrator)}
+                  />
+                  <span>REFUND (Authorize client refund)</span>
+                </label>
+              </div>
+              <textarea
+                className={input}
+                rows={2}
+                placeholder="Resolution notes (required, min 5 characters)"
+                value={resolutionNotes}
+                onChange={(e) => setResolutionNotes(e.target.value)}
+                data-testid="dispute-notes-input"
+              />
+              {!resolveInput.ok && resolutionNotes && (
+                <div className="text-rose-300">{resolveInput.reason}</div>
+              )}
+              {!resolveCheck.ok && (
+                <div className="text-amber-300">{resolveCheck.reason}</div>
+              )}
+              <Action
+                label={`Review resolve_dispute (${resolutionChoice}) transaction`}
+                check={!resolveCheck.ok ? resolveCheck : resolveInput}
+                blocked={blocked}
+                onClick={resolveDisputeTx}
+                testid="act-dispute-resolve"
+              />
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-400 italic">
+              Your connected wallet ({shortenAddress(me) || 'none'}) is not a party or arbitrator for this milestone. Only arbitrator, client (concession), or freelancer (concession) can resolve.
+            </div>
+          )}
+        </div>
+      )}
+
+      {(m.status === 'RESOLVED_RELEASE' || m.status === 'RESOLVED_REFUND') && (
+        <div className="border border-indigo-500/30 bg-indigo-500/10 rounded-xl p-3 space-y-1 text-slate-200" data-testid="resolved-box">
+          <div className="font-semibold text-indigo-300 flex items-center gap-1.5">
+            <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Dispute Resolved: {m.status === 'RESOLVED_RELEASE' ? 'RELEASE to Freelancer' : 'REFUND to Client'}</span>
+          </div>
+          {m.resolution_notes && <div className="text-[11px] text-slate-300">Notes: &ldquo;{m.resolution_notes}&rdquo;</div>}
+          <div className="text-[10px] text-slate-400">Resolution is recorded on-chain. Execute settlement above to create the pull claim.</div>
+        </div>
+      )}
 
       {evCheck.ok && (
         <div className="border border-slate-800 rounded-xl p-3 space-y-2">
@@ -309,12 +505,29 @@ function MilestoneCard({ project, m, me, blocked, open, claimInfo }: {
       )}
 
       {claim && (
-        <div className="border border-slate-800 rounded-xl p-3 space-y-1 font-mono text-[11px]" data-testid="claim">
+        <div className="border border-slate-800 rounded-xl p-3 space-y-2 font-mono text-[11px]" data-testid="claim">
           <div className="font-sans font-semibold text-slate-200">Claim #{claim.claim_id} ({claim.claim_type})</div>
           <div>amount {toBig(claim.amount_wei).toString()} wei · beneficiary {shortenAddress(claim.beneficiary)}</div>
           <div>vault {claim.recipient_vault} · approved: {claimInfo?.vaultApproved === null ? 'unknown' : String(claimInfo?.vaultApproved)}</div>
           <div className={claim.status === 'DISPATCHED' ? 'text-amber-300' : 'text-white'} data-testid="claim-status">status: {claimDisplayStatus(claim)}</div>
           {claim.status === 'DISPATCHED' && <div className="font-sans text-amber-200/80">The contract emitted an asynchronous transfer. Recipient delivery is not proven by this record.</div>}
+          {claimInfo?.vaultApproved === false && sameAddress(me, deployer) && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2 space-y-1">
+              <div className="text-amber-200 font-semibold font-sans">Deployer Action Required:</div>
+              <div className="text-slate-300 font-sans">
+                Destination vault <span className="font-mono text-white">{claim.recipient_vault}</span> is not yet approved. As the contract deployer, you can approve it:
+              </div>
+              <button
+                type="button"
+                className={`${btn} bg-emerald-600 text-white`}
+                disabled={blocked}
+                onClick={() => registerVaultTx(claim.recipient_vault)}
+                data-testid="act-register-vault"
+              >
+                Approve Vault via register_approved_vault
+              </button>
+            </div>
+          )}
           <Action label="Withdraw claim" check={wdCheck} blocked={blocked} onClick={withdraw} testid="act-withdraw" />
         </div>
       )}

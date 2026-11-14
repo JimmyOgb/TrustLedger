@@ -6,7 +6,8 @@
     "dev": "next dev -p 3000",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node --test tests/*.mjs"
   },
   "dependencies": {
     "genlayer-js": "^1.1.8",

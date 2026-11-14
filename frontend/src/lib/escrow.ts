@@ -79,6 +79,9 @@ export const v2IsVaultApproved = (addr: string) => v2Read<boolean>('is_vault_app
 export async function v2GetClaimByMilestone(mid: number): Promise<ClaimView | null> {
   try { return await v2Read<ClaimView>('get_claim_by_milestone', [mid]); } catch (e) { if (isMissing(e)) return null; throw e; }
 }
+export async function v2GetClaim(cid: number): Promise<ClaimView | null> {
+  try { return await v2Read<ClaimView>('get_claim', [cid]); } catch (e) { if (isMissing(e)) return null; throw e; }
+}
 export async function v2GetProjectOrNull(id: number) {
   try { return await v2GetProject(id); } catch (e) { if (isMissing(e)) return null; throw e; }
 }

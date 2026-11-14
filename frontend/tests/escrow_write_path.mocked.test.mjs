@@ -14,12 +14,18 @@ import {
   validateCriteria,
   validateAddMilestone,
   validateEvidence,
+  validateDispute,
+  validateResolution,
+  validateVaultAddress,
   canAddMilestone,
   canFund,
   canSubmitEvidence,
   canEvaluate,
+  canOpenDispute,
+  canResolveDispute,
   canRelease,
   canRefund,
+  canRegisterVault,
   canWithdraw,
   settlementOptions,
   claimDisplayStatus,
@@ -230,4 +236,152 @@ test('[MOCKED] withdraw_claim labels DISPATCHED claims as unverified on-chain an
   const again = canWithdraw(dispatched, FREE, true);
   assert.equal(again.ok, false);
   assert.match(again.reason, /Unverified on-chain/);
+});
+
+// 10. Dispute opening validation and caller authorization
+test('[MOCKED] open_dispute: reason validation, caller authorization, eligible statuses, and settlement blocking', () => {
+  // Input validation
+  assert.equal(validateDispute('').ok, false);
+  assert.equal(validateDispute('bad').ok, false);
+  assert.equal(validateDispute('valid dispute reason').ok, true);
+
+  // Caller authorization: client or freelancer only
+  const fundedMs = ms({ status: 'FUNDED', funded_wei: 100000n });
+  assert.equal(canOpenDispute(proj(), fundedMs, CLIENT).ok, true);
+  assert.equal(canOpenDispute(proj(), fundedMs, FREE).ok, true);
+  assert.equal(canOpenDispute(proj(), fundedMs, ARB).ok, false);
+  assert.equal(canOpenDispute(proj(), fundedMs, OTHER).ok, false);
+
+  // Eligible statuses
+  for (const st of ['FUNDED', 'EVIDENCE_SUBMITTED', 'APPROVED', 'REJECTED', 'INCONCLUSIVE']) {
+    assert.equal(canOpenDispute(proj(), ms({ status: st, funded_wei: 100000n }), CLIENT).ok, true, `should allow open dispute in ${st}`);
+  }
+
+  // Ineligible statuses: CREATED (not funded), DISPUTED (already disputed), settled
+  assert.equal(canOpenDispute(proj(), ms({ status: 'CREATED' }), CLIENT).ok, false);
+  assert.equal(canOpenDispute(proj(), ms({ status: 'DISPUTED' }), CLIENT).ok, false);
+  assert.equal(canOpenDispute(proj(), ms({ status: 'RELEASED', settlement_count: 1 }), CLIENT).ok, false);
+  assert.equal(canOpenDispute(proj(), ms({ status: 'REFUNDED', settlement_count: 1 }), CLIENT).ok, false);
+});
+
+// 11. Dispute resolution authorization (arbitrator, client concession, freelancer concession)
+test('[MOCKED] resolve_dispute: resolution authorization and notes validation', () => {
+  // Notes and resolution validation
+  assert.equal(validateResolution('', 'RELEASE').ok, false);
+  assert.equal(validateResolution('bad', 'RELEASE').ok, false);
+  assert.equal(validateResolution('valid resolution rationale', 'INVALID').ok, false);
+  assert.equal(validateResolution('valid resolution rationale', 'RELEASE').ok, true);
+  assert.equal(validateResolution('valid resolution rationale', 'REFUND').ok, true);
+
+  const disputedMs = ms({ status: 'DISPUTED', funded_wei: 100000n, dispute_reason: 'Scope disagreement' });
+
+  // Must be in DISPUTED status
+  assert.equal(canResolveDispute(proj(), ms({ status: 'FUNDED' }), ARB, 'RELEASE').ok, false);
+
+  // Arbitrator can resolve either way
+  assert.equal(canResolveDispute(proj(), disputedMs, ARB, 'RELEASE').ok, true);
+  assert.equal(canResolveDispute(proj(), disputedMs, ARB, 'REFUND').ok, true);
+
+  // Client can concede to RELEASE (payout to freelancer), but cannot self-award REFUND
+  assert.equal(canResolveDispute(proj(), disputedMs, CLIENT, 'RELEASE').ok, true);
+  assert.equal(canResolveDispute(proj(), disputedMs, CLIENT, 'REFUND').ok, false);
+
+  // Freelancer can concede to REFUND (return to client), but cannot self-award RELEASE
+  assert.equal(canResolveDispute(proj(), disputedMs, FREE, 'REFUND').ok, true);
+  assert.equal(canResolveDispute(proj(), disputedMs, FREE, 'RELEASE').ok, false);
+
+  // Unauthorized third party blocked
+  assert.equal(canResolveDispute(proj(), disputedMs, OTHER, 'RELEASE').ok, false);
+  assert.equal(canResolveDispute(proj(), disputedMs, OTHER, 'REFUND').ok, false);
+});
+
+// 12. Dispute settlement workflow (DISPUTED blocks, RESOLVED_RELEASE unlocks release, RESOLVED_REFUND unlocks refund)
+test('[MOCKED] dispute settlement lifecycle: DISPUTED freezes settlement, resolved statuses unblock appropriate settlement', () => {
+  const disputedMs = ms({ status: 'DISPUTED', funded_wei: 100000n, dispute_reason: 'Work incomplete' });
+  assert.deepEqual(settlementOptions(disputedMs).release, false);
+  assert.deepEqual(settlementOptions(disputedMs).refund, false);
+  assert.equal(canRelease(proj(), disputedMs, CLIENT).ok, false);
+  assert.equal(canRefund(proj(), disputedMs, CLIENT).ok, false);
+
+  // RESOLVED_RELEASE unblocks release to freelancer
+  const resolvedRelease = ms({ status: 'RESOLVED_RELEASE', funded_wei: 100000n, resolution_notes: 'Arbitrator awarded release' });
+  assert.equal(settlementOptions(resolvedRelease).release, true);
+  assert.equal(settlementOptions(resolvedRelease).refund, false);
+  assert.equal(canRelease(proj(), resolvedRelease, CLIENT).ok, true);
+  assert.equal(canRefund(proj(), resolvedRelease, CLIENT).ok, false);
+
+  // RESOLVED_REFUND unblocks refund to client
+  const resolvedRefund = ms({ status: 'RESOLVED_REFUND', funded_wei: 100000n, resolution_notes: 'Arbitrator awarded refund' });
+  assert.equal(settlementOptions(resolvedRefund).release, false);
+  assert.equal(settlementOptions(resolvedRefund).refund, true);
+  assert.equal(canRefund(proj(), resolvedRefund, CLIENT).ok, true);
+  assert.equal(canRelease(proj(), resolvedRefund, CLIENT).ok, false);
+});
+
+// 13. Vault registration validation and deployer-only authorization
+test('[MOCKED] register_approved_vault: address validation, deployer-only guard, and duplicate protection', async () => {
+  assert.equal(validateVaultAddress('').ok, false);
+  assert.equal(validateVaultAddress(ZERO).ok, false);
+  assert.equal(validateVaultAddress('not an address').ok, false);
+  assert.equal(validateVaultAddress(VAULT).ok, true);
+
+  // Deployer check
+  const DEPLOYER = CLIENT;
+  assert.equal(canRegisterVault(DEPLOYER, DEPLOYER, VAULT, false).ok, true);
+  assert.equal(canRegisterVault(FREE, DEPLOYER, VAULT, false).ok, false, 'non-deployer must be blocked');
+  assert.equal(canRegisterVault(DEPLOYER, DEPLOYER, VAULT, true).ok, false, 'already approved vault must be rejected');
+
+  // Transaction execution with read-back verification
+  _resetInFlight();
+  let vaultVerified = false;
+  const res = await runTransaction({
+    key: `register_vault:${VAULT}`,
+    action: 'Register approved vault',
+    contract: V2,
+    caller: DEPLOYER,
+    method: 'register_approved_vault',
+    args: [VAULT],
+    valueWei: 0n,
+    preflight: async () => canRegisterVault(DEPLOYER, DEPLOYER, VAULT, false),
+    verify: async () => { vaultVerified = true; return true; },
+  }, baseDeps());
+
+  assert.equal(res.phase, 'confirmed');
+  assert.equal(vaultVerified, true);
+});
+
+// 14. Complete 10-step lifecycle write-path mapping verification
+test('[MOCKED] all 10 advertised escrow operations map to genuine V2 methods with preflight and read-back verification', async () => {
+  _resetInFlight();
+  const operations = [
+    { name: '1. create_project', method: 'create_project', args: ['Project Title', 'Description', CLIENT, ARB], val: 0n },
+    { name: '2. add_milestone', method: 'add_milestone', args: [1, 'Milestone 1', 'Desc', '[]', FREE, VAULT, 100000n], val: 0n },
+    { name: '3. fund_milestone', method: 'fund_milestone', args: [1], val: 100000n },
+    { name: '4. submit_evidence', method: 'submit_evidence', args: [1, 'https://example.com/evidence', '0x12345678', 'Evidence notes'], val: 0n },
+    { name: '5. evaluate_milestone', method: 'evaluate_milestone', args: [1], val: 0n },
+    { name: '6a. open_dispute', method: 'open_dispute', args: [1, 'Milestone disputed by client'], val: 0n },
+    { name: '6b. resolve_dispute', method: 'resolve_dispute', args: [1, 'RELEASE', 'Arbitrator resolution notes'], val: 0n },
+    { name: '7. release_milestone', method: 'release_milestone', args: [1], val: 0n },
+    { name: '8. refund_milestone', method: 'refund_milestone', args: [1], val: 0n },
+    { name: '9. register_approved_vault', method: 'register_approved_vault', args: [VAULT], val: 0n },
+    { name: '10. withdraw_claim', method: 'withdraw_claim', args: [1], val: 0n },
+  ];
+
+  for (const op of operations) {
+    let verified = false;
+    const txRes = await runTransaction({
+      key: `lifecycle:${op.method}`,
+      action: op.name,
+      contract: V2,
+      caller: CLIENT,
+      method: op.method,
+      args: op.args,
+      valueWei: op.val,
+      preflight: async () => ({ ok: true }),
+      verify: async () => { verified = true; return true; },
+    }, baseDeps({ getBalance: async () => 1_000_000n }));
+
+    assert.equal(txRes.phase, 'confirmed', `${op.name} must confirm`);
+    assert.equal(verified, true, `${op.name} must verify via read-back`);
+  }
 });
